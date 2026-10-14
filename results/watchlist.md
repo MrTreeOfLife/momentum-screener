@@ -4,7 +4,7 @@
 
 **Wochenvergleich:** Erster Lauf, noch kein Vergleich.
 
-**Bewertete Aktien:** 1717 · **Im Aufwärtstrend:** 333 · **Kursdaten bis:** 2026-10-14
+**Bewertete Aktien:** 1717 · **Im Aufwärtstrend:** 334 · **Kursdaten bis:** 2026-10-14
 
 ## 🇺🇸 USA (Top 12)
 | # | Ticker | Name | Score | RS | TT | 1M | 3M | vom Hoch | Vol | Plan: Kauf / Stop / Ziel | Zahlen |
