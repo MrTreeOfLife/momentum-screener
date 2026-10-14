@@ -73,6 +73,33 @@ def _find_col(columns, candidates):
     return None
 
 
+SECTOR_RULES = [  # (Stichworte, einheitlicher Sektor auf Deutsch)
+    (("health", "pharma", "biotech", "medic", "hospital"), "Gesundheit"),
+    (("information tech", "technology", "software", "semiconductor", "it services", "electronic"), "Technologie"),
+    (("energy", "oil", "gas"), "Energie"),
+    (("utilit", "electricity"), "Versorger"),
+    (("real estate", "reit", "property"), "Immobilien"),
+    (("financ", "bank", "insurance", "investment", "life insurance"), "Finanzen"),
+    (("communication", "telecom", "media"), "Kommunikation"),
+    (("material", "chemi", "metal", "mining", "packaging", "construction material"), "Rohstoffe & Chemie"),
+    (("staples", "defensive", "beverage", "food", "tobacco", "household", "personal care", "retail staples"), "Basiskonsum"),
+    (("consumer", "retail", "automo", "apparel", "leisure", "travel", "tourism", "e-commerce",
+      "sports", "hotel", "airline", "homebuilding"), "Zyklischer Konsum"),
+    (("industr", "aerospace", "defen", "engineering", "logistic", "manufactur", "construction",
+      "conglomerate", "airport", "waste", "distribution", "handling", "transport", "support services"), "Industrie"),
+]
+
+
+def normalize_sector(raw):
+    s = str(raw).lower()
+    if not s or s == "nan":
+        return "Sonstige"
+    for words, label in SECTOR_RULES:
+        if any(w in s for w in words):
+            return label
+    return "Sonstige"
+
+
 def load_universe():
     rows = []
     for region, url, suffix in SOURCES:
@@ -91,7 +118,8 @@ def load_universe():
             if tick_col is None or len(t) < 20:
                 continue
             name_col = _find_col(t.columns, {"security", "company", "name"})
-            sect_col = _find_col(t.columns, {"gics sector", "sector", "prime standard sector", "industry"})
+            sect_col = _find_col(t.columns, {"gics sector", "sector", "prime standard sector", "industry",
+                                             "ftse industry classification benchmark sector"})
             for _, r in t.iterrows():
                 raw = re.sub(r"\[.*?\]", "", str(r[tick_col])).strip().upper()
                 if not raw or raw == "NAN":
@@ -108,7 +136,7 @@ def load_universe():
                     "ticker": ticker,
                     "region": region,
                     "name": str(r[name_col]) if name_col is not None else "",
-                    "sector": str(r[sect_col]) if sect_col is not None else "",
+                    "sector": normalize_sector(r[sect_col]) if sect_col is not None else "Sonstige",
                 })
             found = True
             break
@@ -310,6 +338,20 @@ def write_outputs(res):
 """
     with open(f"{OUT_DIR}/watchlist.md", "w", encoding="utf-8") as f:
         f.write(md)
+
+    # Daten für das Dashboard (kompakt, gerundet)
+    dash_cols = ["ticker", "name", "region", "sector", "price", "score", "rs_rank", "ret_1m", "ret_3m",
+                 "ret_6m", "dist_high", "vol_ratio", "trend_pts", "atr_pct", "stop_2atr", "sma20",
+                 "new_high_5d", "qualifies"]
+    dj = res[dash_cols].copy()
+    dj["rs_rank"] = dj["rs_rank"].round().astype(int)
+    for c in ["price", "stop_2atr", "sma20", "vol_ratio"]:
+        dj[c] = dj[c].round(2)
+    for c in ["ret_1m", "ret_3m", "ret_6m", "dist_high", "atr_pct"]:
+        dj[c] = dj[c].round(4)
+    dj["score"] = dj["score"].round(1)
+    dj["stand"] = today
+    dj.to_json(f"{OUT_DIR}/dashboard.json", orient="records", force_ascii=False)
     print(f"[INFO] Watchlist geschrieben: {len(us)} US, {len(eu)} EU")
 
 
