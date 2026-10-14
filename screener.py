@@ -35,19 +35,24 @@ TOP_US = 12             # Anzahl US-Aktien in der Watchlist
 TOP_EU = 8              # Anzahl Europa-Aktien in der Watchlist
 MIN_PRICE = 3.0         # Mindestkurs (filtert "Pennystocks")
 MIN_TURNOVER_US = 5e6   # Mindest-Tagesumsatz in USD (Liquidität)
-MIN_TURNOVER_EU = 1e6   # Mindest-Tagesumsatz in EUR
+MIN_TURNOVER_EU = 1e6   # Mindest-Tagesumsatz in EUR (bzw. GBP/CHF)
+MIN_ATR_PCT = 0.008     # Mindest-Schwankung pro Tag. Darunter meist Übernahmekandidaten
+                        # (Kurs klebt am Angebotspreis, kein Swing-Potenzial)
 WEIGHTS = {"rs": 0.50, "trend": 0.25, "high": 0.25}  # Gewichtung im Gesamtscore
 
 # Aktienlisten (werden jede Woche frisch von Wikipedia geholt)
+# (Region, URL, Börsen-Endung falls die Liste keine hat)
 SOURCES = [
-    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"),
-    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"),
-    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"),
-    ("US", "https://en.wikipedia.org/wiki/Nasdaq-100"),
-    ("EU", "https://en.wikipedia.org/wiki/DAX"),
-    ("EU", "https://en.wikipedia.org/wiki/MDAX"),
-    ("EU", "https://en.wikipedia.org/wiki/SDAX"),
-    ("EU", "https://en.wikipedia.org/wiki/EURO_STOXX_50"),
+    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", ""),
+    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies", ""),
+    ("US", "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies", ""),
+    ("US", "https://en.wikipedia.org/wiki/Nasdaq-100", ""),
+    ("EU", "https://en.wikipedia.org/wiki/DAX", ".DE"),
+    ("EU", "https://en.wikipedia.org/wiki/MDAX", ".DE"),
+    ("EU", "https://en.wikipedia.org/wiki/EURO_STOXX_50", ".DE"),
+    ("EU", "https://en.wikipedia.org/wiki/CAC_40", ".PA"),
+    ("EU", "https://en.wikipedia.org/wiki/FTSE_100_Index", ".L"),
+    ("EU", "https://en.wikipedia.org/wiki/Swiss_Market_Index", ".SW"),
 ]
 
 # Vergleichsindex je Region
@@ -70,7 +75,7 @@ def _find_col(columns, candidates):
 
 def load_universe():
     rows = []
-    for region, url in SOURCES:
+    for region, url, suffix in SOURCES:
         try:
             html = requests.get(url, headers=HEADERS, timeout=30).text
             tables = pd.read_html(io.StringIO(html))
@@ -93,8 +98,12 @@ def load_universe():
                     continue
                 if region == "US":
                     ticker = raw.replace(".", "-")          # BRK.B -> BRK-B
+                elif suffix == ".L":
+                    ticker = raw.replace(".", "-") + ".L"   # London: BT.A -> BT-A.L
+                elif re.search(r"\.[A-Z]{1,2}$", raw):
+                    ticker = raw                            # hat schon Endung (ADS.DE)
                 else:
-                    ticker = raw if "." in raw else raw + ".DE"  # MDAX: AIXA -> AIXA.DE
+                    ticker = raw + suffix                   # MDAX: AIXA -> AIXA.DE
                 rows.append({
                     "ticker": ticker,
                     "region": region,
@@ -186,6 +195,12 @@ def compute_metrics(df, bench_close):
     tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = tr.rolling(14).mean().iloc[-1]
 
+    # Übernahme-Check: großer Kurssprung in den letzten 20 Tagen und danach
+    # kaum noch Bewegung (Kurs klebt am Angebotspreis)
+    range_med5 = ((h.iloc[-5:] - l.iloc[-5:]) / c.iloc[-5:]).median()
+    max_jump20 = c.pct_change().iloc[-20:].abs().max()
+    takeover = bool(max_jump20 > 0.15 and range_med5 < 0.012)
+
     return {
         "price": last,
         "ret_1m": r1, "ret_3m": r3, "ret_6m": r6,
@@ -199,6 +214,7 @@ def compute_metrics(df, bench_close):
         "vol_ratio": vol_ratio,
         "high_score": high_score,
         "atr_pct": atr / last,
+        "takeover": takeover,
         "sma20": sma20.iloc[-1],
         "stop_2atr": last - 2 * atr,
         "turnover": (c.iloc[-20:] * v.iloc[-20:]).mean(),
@@ -221,7 +237,9 @@ def score(uni, prices):
                 m = compute_metrics(df, bclose)
             except Exception:
                 continue
-            if m["price"] < MIN_PRICE or m["turnover"] < min_turn or np.isnan(m["rs_raw"]):
+            turnover = m["turnover"] / 100 if r.ticker.endswith(".L") else m["turnover"]  # London: Pence
+            if (m["price"] < MIN_PRICE or turnover < min_turn or np.isnan(m["rs_raw"])
+                    or m["atr_pct"] < MIN_ATR_PCT or m["takeover"]):
                 continue
             out.append({**r.to_dict(), **m})
 
