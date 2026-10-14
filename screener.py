@@ -423,13 +423,14 @@ def market_regime(res, prices, data_date):
         breadth50 = float(reg["above_sma50"].mean()) if len(reg) else np.nan
         breadth_trend = float(reg["qualifies"].mean()) if len(reg) else np.nan
         # Verkaufstage (IBD "Distribution Days"): Index fällt um mehr als 0,2 % bei höherem Volumen
-        # als am Vortag. Ein Verkaufstag verfällt, wenn der Index danach 5 % über diesen Schluss steigt.
+        # als am Vortag. Er zählt 25 Sitzungen lang und verfällt früher, wenn ein späteres Tageshoch
+        # 5 % über seinem Schlusskurs liegt (wie im IBD-Skill von tradermonty).
         chg = c.pct_change()
         is_dist = ((chg < -0.002) & (v > v.shift(1))).iloc[-25:]
-        last25 = c.iloc[-25:]
+        last25_close, last25_high = c.iloc[-25:], df["High"].iloc[-25:]
         dist_days = 0
-        for i, (day, flag) in enumerate(is_dist.items()):
-            if flag and not (last25.iloc[i + 1:] >= last25.iloc[i] * 1.05).any():
+        for i, flag in enumerate(is_dist.values):
+            if flag and not (last25_high.iloc[i + 1:] >= last25_close.iloc[i] * 1.05).any():
                 dist_days += 1
         checks = {
             "index_ueber_sma50": bool(c.iloc[-1] > s50.iloc[-1]),
@@ -465,8 +466,50 @@ def market_regime(res, prices, data_date):
             "fx_gbp": round(fx["GBP"], 4) if "GBP" in fx else None,
             "fx_chf": round(fx["CHF"], 4) if "CHF" in fx else None,
             "data_date": data_date,
+            **(external_breadth() if region == "US" else {}),
         })
     return rows
+
+
+# Zweite Meinung zur US-Marktbreite: frei verfügbare Daten von TraderMonty (tradermonty/claude-trading-skills)
+UPTREND_URL = "https://raw.githubusercontent.com/tradermonty/uptrend-dashboard/main/data/uptrend_ratio_timeseries.csv"
+BREADTH_URL = "https://tradermonty.github.io/market-breadth-analysis/market_breadth_data.csv"
+
+
+def external_breadth():
+    """Liest zwei unabhängige Breitenindikatoren. Fehlt eine Quelle, bleiben die Felder leer."""
+    out = {}
+    try:  # Uptrend Ratio: Anteil der ca. 2.800 US-Aktien im Aufwärtstrend
+        u = pd.read_csv(io.StringIO(requests.get(UPTREND_URL, headers=HEADERS, timeout=30).text))
+        a = u[u["worksheet"] == "all"].sort_values("date").iloc[-1]
+        ratio = float(a["ratio"])
+        label = ("Krise" if ratio < 0.097 else "schwach" if ratio < 0.25 else "normal" if ratio < 0.37 else "stark")
+        out.update({
+            "ext_uptrend_ratio": round(ratio, 4),
+            "ext_uptrend_ma10": round(float(a["ma_10"]), 4) if pd.notna(a["ma_10"]) else None,
+            "ext_uptrend_trend": str(a["trend"]),
+            "ext_uptrend_label": label,
+            "ext_uptrend_date": str(a["date"]),
+        })
+    except Exception as e:
+        print(f"[WARN] Uptrend Ratio nicht geladen: {e}")
+    try:  # S&P 500 Breadth Index: 8-Tage- und 200-Tage-Schnitt
+        b = pd.read_csv(io.StringIO(requests.get(BREADTH_URL, headers=HEADERS, timeout=30).text))
+        r = b.sort_values("Date").iloc[-1]
+        ma8, ma200 = float(r["Breadth_Index_8MA"]), float(r["Breadth_Index_200MA"])
+        label = ("sehr schwach" if ma8 < 0.4 else "schwächer" if ma8 < 0.5 else "neutral" if ma8 < 0.6
+                 else "gesund" if ma8 < 0.7 else "sehr stark")
+        out.update({
+            "ext_breadth_8ma": round(ma8, 4),
+            "ext_breadth_200ma": round(ma200, 4),
+            "ext_breadth_200_steigt": int(r["Breadth_200MA_Trend"]) == 1,
+            "ext_breadth_warnsignal": str(r["Bearish_Signal"]).strip().lower() in ("true", "1"),
+            "ext_breadth_label": label,
+            "ext_breadth_date": str(r["Date"]),
+        })
+    except Exception as e:
+        print(f"[WARN] Breadth Index nicht geladen: {e}")
+    return out
 
 
 # --------------------------------------------------------------------------
