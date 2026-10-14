@@ -422,8 +422,15 @@ def market_regime(res, prices, data_date):
         reg = res[res.region == region]
         breadth50 = float(reg["above_sma50"].mean()) if len(reg) else np.nan
         breadth_trend = float(reg["qualifies"].mean()) if len(reg) else np.nan
+        # Verkaufstage (IBD "Distribution Days"): Index fällt um mehr als 0,2 % bei höherem Volumen
+        # als am Vortag. Ein Verkaufstag verfällt, wenn der Index danach 5 % über diesen Schluss steigt.
         chg = c.pct_change()
-        dist_days = int(((chg < -0.002) & (v > v.shift(1))).iloc[-25:].sum())
+        is_dist = ((chg < -0.002) & (v > v.shift(1))).iloc[-25:]
+        last25 = c.iloc[-25:]
+        dist_days = 0
+        for i, (day, flag) in enumerate(is_dist.items()):
+            if flag and not (last25.iloc[i + 1:] >= last25.iloc[i] * 1.05).any():
+                dist_days += 1
         checks = {
             "index_ueber_sma50": bool(c.iloc[-1] > s50.iloc[-1]),
             "sma50_steigt": bool(s50.iloc[-1] > s50.iloc[-11]),
