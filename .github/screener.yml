@@ -1,0 +1,34 @@
+name: Momentum Screener
+
+on:
+  schedule:
+    # Jeden Sonntag um 16:52 UTC (= 18:52 Sommerzeit / 17:52 Winterzeit in Deutschland)
+    - cron: "52 16 * * 0"
+  workflow_dispatch:   # erlaubt den manuellen Start über den Button "Run workflow"
+
+permissions:
+  contents: write      # nötig, damit die Ergebnisse gespeichert werden dürfen
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pakete installieren
+        run: pip install yfinance pandas numpy requests lxml
+
+      - name: Screener ausführen
+        run: python screener.py
+
+      - name: Ergebnisse speichern
+        run: |
+          git config user.name "screener-bot"
+          git config user.email "screener-bot@users.noreply.github.com"
+          git add results/
+          git commit -m "Watchlist $(date -u +%Y-%m-%d)" || echo "Keine Änderungen"
+          git push
