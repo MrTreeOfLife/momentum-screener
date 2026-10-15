@@ -201,6 +201,9 @@ def download_prices(tickers, chunk=150, min_bars=130):
                 sub = sub[["High", "Low", "Close", "Volume"]].dropna()
                 if len(sub) >= min_bars:
                     sub.index = pd.to_datetime(sub.index).tz_localize(None).normalize()
+                    # Den heutigen Tag weglassen: Läuft der Screener während der Handelszeit, wäre die
+                    # Tageskerze unfertig (zu wenig Volumen, falsche Verkaufstage). Sonntags ändert das nichts.
+                    sub = sub[sub.index < pd.Timestamp(datetime.now(timezone.utc).date())]
                     data[t] = sub
             except Exception:
                 pass
