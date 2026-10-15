@@ -32,7 +32,7 @@ import os
 import re
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -209,6 +209,24 @@ def download_prices(tickers, chunk=150, min_bars=130):
                 pass
         print(f"[INFO] Kurse geladen: {min(i + chunk, len(tickers))}/{len(tickers)}")
     return data
+
+
+def align_dates(prices, uni):
+    """Alle Kurse einer Region auf denselben letzten Handelstag kürzen. Yahoo liefert den letzten Tag
+    manchmal nur für einen Teil der Aktien; sonst würden Aktien mit verschiedenen Tagen und der Index
+    mit einem anderen Tag verglichen."""
+    refs = {}
+    for region, bench in BENCHMARK.items():
+        ticks = [t for t in uni.loc[uni.region == region, "ticker"] if t in prices]
+        if not ticks:
+            continue
+        common = pd.Series([prices[t].index[-1] for t in ticks]).mode().max()
+        ref = min(common, prices[bench].index[-1]) if bench in prices else common
+        for t in ticks + ([bench] if bench in prices else []):
+            prices[t] = prices[t][prices[t].index <= ref]
+        refs[region] = ref.strftime("%Y-%m-%d")
+        print(f"[INFO] {region}: Kursdaten einheitlich bis {refs[region]}")
+    return refs
 
 
 # --------------------------------------------------------------------------
@@ -468,7 +486,7 @@ def market_regime(res, prices, data_date):
             "fx_usd": round(fx["USD"], 4) if "USD" in fx else None,
             "fx_gbp": round(fx["GBP"], 4) if "GBP" in fx else None,
             "fx_chf": round(fx["CHF"], 4) if "CHF" in fx else None,
-            "data_date": data_date,
+            "data_date": data_date.get(region) if isinstance(data_date, dict) else data_date,
             **(external_breadth() if region == "US" else {}),
         })
     return rows
@@ -522,11 +540,26 @@ PICK_COLS = ["date", "run_date", "ticker", "name", "region", "currency", "pick_r
              "price", "stop_2atr", "atr_pct"]
 
 
+def week_key(d):
+    """Woche, beginnend am Sonntag (Tag des automatischen Laufs). Mehrere Läufe in einer Woche
+    zählen als eine Watchlist, der letzte Lauf gewinnt."""
+    d = date.fromisoformat(str(d)[:10])
+    return (d - timedelta(days=(d.weekday() + 1) % 7)).isoformat()
+
+
+def latest_per_week(picks):
+    if picks.empty:
+        return picks
+    wk = picks["run_date"].astype(str).map(week_key)
+    last = picks["run_date"].astype(str).groupby(wk).transform("max")
+    return picks[picks["run_date"].astype(str) == last].reset_index(drop=True)
+
+
 def load_picks(run_date):
-    """Bisherige Kandidaten. Beim ersten Mal aus alten history-Dateien rekonstruiert."""
+    """Bisherige Kandidaten (eine Liste pro Woche). Beim ersten Mal aus alten history-Dateien rekonstruiert."""
     path = f"{OUT_DIR}/picks.csv"
     if os.path.exists(path):
-        return pd.read_csv(path)
+        return latest_per_week(pd.read_csv(path))
     rows = []
     for f in sorted(glob.glob(f"{OUT_DIR}/history/*.csv")):
         d = os.path.basename(f)[:-4]
@@ -552,7 +585,7 @@ def load_picks(run_date):
 
 def week_changes(res, picks, run_date):
     """Vergleich der aktuellen Watchlist mit der letzten früheren Watchlist."""
-    prev_runs = sorted(d for d in picks["run_date"].astype(str).unique() if d < run_date)
+    prev_runs = sorted(d for d in picks["run_date"].astype(str).unique() if week_key(d) < week_key(run_date))
     now = res[res.pick].set_index("ticker")
     if not prev_runs:
         return [], None
@@ -664,7 +697,7 @@ def write_outputs(res, market, changes, prev_run, track, run_date, data_date):
     p = res[res.pick].copy()
     p["date"], p["run_date"] = data_date, run_date
     old = load_picks(run_date)
-    old = old[old["run_date"].astype(str) != run_date]
+    old = old[old["run_date"].astype(str).map(week_key) != week_key(run_date)]
     pd.concat([old, p[PICK_COLS]], ignore_index=True).to_csv(f"{OUT_DIR}/picks.csv", index=False, float_format="%.4f")
 
     # Markdown-Watchlist
@@ -758,15 +791,17 @@ def main(run_date=None):
     prices = download_prices(tickers)
     prices.update(download_prices(list(FX.values()), min_bars=5))
 
+    ref_dates = align_dates(prices, uni)
     res = score(uni, prices)
     if res.empty:
         sys.exit("[ERROR] Keine Aktie bewertet (Kursdaten fehlen?).")
-    data_date = prices[BENCHMARK["US"]].index[-1].strftime("%Y-%m-%d") if BENCHMARK["US"] in prices else run_date
+    data_date = ref_dates.get("US", run_date)
 
     res = add_earnings(res, today)
-    market = market_regime(res, prices, data_date)
+    market = market_regime(res, prices, ref_dates)
     changes, prev_run = week_changes(res, picks_before, run_date)
-    track = track_record(picks_before[picks_before["run_date"].astype(str) < run_date], prices)
+    earlier = picks_before["run_date"].astype(str).map(week_key) < week_key(run_date) if len(picks_before) else []
+    track = track_record(picks_before[earlier] if len(picks_before) else picks_before, prices)
     write_outputs(res, market, changes, prev_run, track, run_date, data_date)
 
 
